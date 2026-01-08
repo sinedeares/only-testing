@@ -78,9 +78,5 @@ $arComponentParameters = [
             "TYPE" => "STRING",
             "DEFAULT" => "Bookings"
         ],
-
-        "CACHE_TIME" => [
-            "DEFAULT" => 3600
-        ]
     ]
 ];

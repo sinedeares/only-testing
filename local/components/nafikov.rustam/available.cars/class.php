@@ -15,7 +15,7 @@ class AvailableCars extends CBitrixComponent
     private $userId;
     private $userPositionId;
 
-    protected function checkModules ()
+    protected function checkModules()
     {
         if (!Loader::includeModule('iblock')) {
             throw new \Exception('Модуль iblock не установлен');
@@ -37,16 +37,6 @@ class AvailableCars extends CBitrixComponent
 
         // Проверка названия HL-блока
         $arParams['HL_BLOCK_NAME'] = trim($arParams['HL_BLOCK_NAME'] ?? 'Bookings');
-
-        $arParams['CACHE_TIME'] = (int)($arParams['CACHE_TIME'] ?? 3600);
-        if ($arParams['CACHE_TIME'] < 0) {
-            $arParams['CACHE_TIME'] = 3600;
-        }
-
-        $arParams['CACHE_TYPE'] = $arParams['CACHE_TYPE'] ?? 'A';
-        if (!in_array($arParams['CACHE_TYPE'], ['A', 'Y', 'N'])) {
-            $arParams['CACHE_TYPE'] = 'A';
-        }
 
         if ($arParams['CARS_IBLOCK_ID'] <= 0) {
             throw new \Exception('Не указан ID инфоблока автомобилей');
@@ -108,7 +98,7 @@ class AvailableCars extends CBitrixComponent
             'filter' => [
                 '=IBLOCK_ID' => $this->arParams['POSITIONS_IBLOCK_ID'],
                 '=ID' => $this->userPositionId,
-                '=ACTIVE' => 'Y',
+                'ACTIVE' => 'Y',
             ],
             'select' => [
                 'ID'
@@ -156,7 +146,7 @@ class AvailableCars extends CBitrixComponent
     {
         $bookedCars = [];
 
-        try{
+        try {
             $hlBlock = HighloadBlockTable::getList([
                 'filter' => ['=NAME' => $this->arParams['HL_BLOCK_NAME']],
                 'select' => ['ID', 'NAME', 'TABLE_NAME'],
@@ -230,21 +220,16 @@ class AvailableCars extends CBitrixComponent
             ];
         }
 
-        // Получаем все телефоны водителей одним запросом
-        foreach ($driverIds as $driverId) {
-            if (!isset($driversData[$driverId])) {
-                continue;
-            }
+        $phoneProps = \CIBlockElement::GetPropertyValues(
+            $this->arParams['DRIVERS_IBLOCK_ID'],
+            ['ID' => $driverIds],
+            false,
+            ['CODE' => 'PHONE']
+        );
 
-            $dbDriverProps = \CIBlockElement::GetProperty(
-                $this->arParams['DRIVERS_IBLOCK_ID'],
-                $driverId,
-                ['sort' => 'asc'],
-                ['CODE' => 'PHONE']
-            );
-
-            if ($phoneProp = $dbDriverProps->Fetch()) {
-                $driversData[$driverId]['PHONE'] = $phoneProp['VALUE'];
+        foreach ($phoneProps as $driverId => $props) {
+            if (isset($driversData[$driverId]) && !empty($props['PHONE'])) {
+                $driversData[$driverId]['PHONE'] = $props['PHONE'];
             }
         }
 
@@ -263,11 +248,11 @@ class AvailableCars extends CBitrixComponent
         }
 
         $categories = ElementTable::getList([
-           'filter' => [
-               '=IBLOCK_ID' => $this->arParams['CATEGORIES_IBLOCK_ID'],
-               '=ID' => $categoryIds,
-               '=ACTIVE' => 'Y'
-           ],
+            'filter' => [
+                '=IBLOCK_ID' => $this->arParams['CATEGORIES_IBLOCK_ID'],
+                '=ID' => $categoryIds,
+                '=ACTIVE' => 'Y'
+            ],
             'select' => ['ID', 'NAME']
         ]);
 
@@ -286,8 +271,7 @@ class AvailableCars extends CBitrixComponent
             'IBLOCK_ID' => $this->arParams['CARS_IBLOCK_ID'],
             'ACTIVE' => 'Y',
         ];
-
-        //исключаем забронированные автомобили
+        
         if (!empty($bookedCarIds)) {
             $filter['!ID'] = $bookedCarIds;
         }
@@ -319,7 +303,6 @@ class AvailableCars extends CBitrixComponent
 
         $carIds = array_keys($carsRaw);
 
-        // Список нужных кодов свойств
         $neededPropertyCodes = ['CATEGORY', 'DRIVER', 'LICENSE_PLATE', 'VIN', 'BRAND', 'MODEL'];
 
         foreach ($carIds as $carId) {
@@ -375,10 +358,8 @@ class AvailableCars extends CBitrixComponent
         $driversData = $this->getDriversData($driverIds);
 
         foreach ($cars as &$car) {
-            // Добавляем название категории
             $car['CATEGORY_NAME'] = $categoriesNames[$car['CATEGORY_ID']] ?? null;
 
-            // Добавляем данные водителя
             if (isset($driversData[$car['DRIVER_ID']])) {
                 $car['DRIVER_NAME'] = $driversData[$car['DRIVER_ID']]['NAME'];
                 $car['DRIVER_PHONE'] = $driversData[$car['DRIVER_ID']]['PHONE'];
@@ -442,39 +423,75 @@ class AvailableCars extends CBitrixComponent
 
     public function executeComponent()
     {
-        try{
-
+        try {
             $this->checkModules();
-
             $this->getCurrentUserData();
-
             $dates = $this->validateDates();
 
-            $availableCategories = $this->getAvailableCategories();
-            if (empty($availableCategories)) {
-                throw new \Exception('Для вашей должности не настроены доступные категории автомобилей');
-            }
-
-            $bookedCarIds = $this->getBookedCarIds($dates['DATE_FROM'], $dates['DATE_TO']);
-
-            $availableCars = $this->getAvailableCars($availableCategories, $bookedCarIds);
-
-            $this->arResult = [
-                'CARS' => $availableCars,
-                'DATE_FROM' => $dates['DATE_FROM'],
-                'DATE_TO' => $dates['DATE_TO'],
-                'DATE_FROM_FORMATTED' => $dates['DATE_FROM']->format('d.m.Y H:i'),
-                'DATE_TO_FORMATTED' => $dates['DATE_TO']->format('d.m.Y H:i'),
+            // формируем ключ кеша
+            $cacheId = md5(serialize([
                 'USER_ID' => $this->userId,
                 'USER_POSITION_ID' => $this->userPositionId,
-                'AVAILABLE_CATEGORIES' => $availableCategories,
-                'TOTAL_CARS' => count($availableCars),
-                'TOTAL_BOOKED' => count($bookedCarIds)
-            ];
+                'DATE_FROM' => $dates['DATE_FROM']->format('Y-m-d H:i:s'),
+                'DATE_TO' => $dates['DATE_TO']->format('Y-m-d H:i:s'),
+            ]));
+
+            $cacheDir = '/car_booking_component';
+            $cacheTime = 3600;
+
+            //создаём тэгированный кэш, чтобы кэш очищался при изменении HL Bookings
+            // (добавление записи, освобождение брони и тд)
+            //очистка при изменении через clearByTag('car_booking_list')
+            $taggedCache = \Bitrix\Main\Application::getInstance()->getTaggedCache();
+            $cache = \Bitrix\Main\Data\Cache::createInstance();
+
+            if ($cache->initCache($cacheTime, $cacheId, $cacheDir)) {
+                $cachedData = $cache->getVars();
+
+                // Восстанавливаем объекты DateTime из строк
+                $cachedData['DATE_FROM'] = new \DateTime($cachedData['DATE_FROM_STRING']);
+                $cachedData['DATE_TO'] = new \DateTime($cachedData['DATE_TO_STRING']);
+                unset($cachedData['DATE_FROM_STRING'], $cachedData['DATE_TO_STRING']);
+
+                $this->arResult = $cachedData;
+
+            } elseif ($cache->startDataCache()) {
+                $taggedCache->startTagCache($cacheDir);
+                $taggedCache->registerTag('car_booking_list');
+                $taggedCache->endTagCache();
+
+                $availableCategories = $this->getAvailableCategories();
+
+                if (empty($availableCategories)) {
+                    $cache->abortDataCache();
+                    throw new \Exception('Для вашей должности не настроены доступные категории автомобилей');
+                }
+
+                $bookedCarIds = $this->getBookedCarIds($dates['DATE_FROM'], $dates['DATE_TO']);
+                $availableCars = $this->getAvailableCars($availableCategories, $bookedCarIds);
+
+                $this->arResult = [
+                    'CARS' => $availableCars,
+                    'DATE_FROM' => $dates['DATE_FROM'],
+                    'DATE_TO' => $dates['DATE_TO'],
+                    'DATE_FROM_STRING' => $dates['DATE_FROM']->format('Y-m-d H:i:s'),
+                    'DATE_TO_STRING' => $dates['DATE_TO']->format('Y-m-d H:i:s'),
+                    'DATE_FROM_FORMATTED' => $dates['DATE_FROM']->format('d.m.Y H:i'),
+                    'DATE_TO_FORMATTED' => $dates['DATE_TO']->format('d.m.Y H:i'),
+                    'USER_ID' => $this->userId,
+                    'USER_POSITION_ID' => $this->userPositionId,
+                    'AVAILABLE_CATEGORIES' => $availableCategories,
+                    'TOTAL_CARS' => count($availableCars),
+                    'TOTAL_BOOKED' => count($bookedCarIds)
+                ];
+
+                $cache->endDataCache($this->arResult);
+
+            }
 
             $this->includeComponentTemplate();
-        }
-        catch (\Exception $e) {
+
+        } catch (\Exception $e) {
             $this->arResult = [
                 'ERROR' => $e->getMessage(),
                 'CARS' => []
